@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agenda – Centro de Salud Urbano Shushufindi</title>
+  <meta name="description" content="Agenda web para el CENTRO DE SALUD URBANO SHUSHUFINDI" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { height: 100%; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+    #error-banner { display:none; }
+  </style>
+  <!-- React + ReactDOM + Babel -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800">
+  <div id="error-banner" class="fixed top-0 left-0 right-0 bg-red-600 text-white text-sm p-2 z-50"></div>
+  <div id="app"></div>
+
+  <script>
+    // Mostrar errores en un banner para facilitar diagnóstico
+    window.addEventListener('error', function (e) {
+      var el = document.getElementById('error-banner');
+      el.textContent = 'Error: ' + (e.message || e.error);
+      el.style.display = 'block';
+    });
+  </script>
+
+  <!-- IMPORTANTE: data-presets para que Babel entienda JSX/ES6 -->
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useEffect, useMemo } = React;
+
+    // =============================================================
+    // CENTRO DE SALUD URBANO SHUSHUFINDI – Agenda de Servicios Médicos
+    // =============================================================
+    const ESTABLECIMIENTO = "CENTRO DE SALUD URBANO SHUSHUFINDI";
+    const HORA_INICIO = 8;   // 08:00
+    const HORA_FIN = 17;     // 17:00
+    const DURACION_MIN = 30; // 30 minutos
+    const DIAS_SEMANA = 5;   // L-V
+
+    const SERVICIOS_INICIALES = [
+      { id: "estadistica", nombre: "Estadística" },
+      { id: "medicina_general", nombre: "Medicina General" },
+      { id: "medicina_familiar", nombre: "Medicina Familiar" },
+      { id: "obstetricia", nombre: "Obstetricia" },
+      { id: "odontologia", nombre: "Odontología" },
+      { id: "psicologia", nombre: "Psicología" },
+      { id: "vacunacion", nombre: "Vacunación" },
+      { id: "sala_procedimientos", nombre: "Sala de procedimientos" },
+      { id: "signos_vitales", nombre: "Toma de signos vitales" },
+    ];
+
+    const SERVICIOS_CON_SIGNOS = new Set(["medicina_general","medicina_familiar","obstetricia"]);
+
+    const PROFESIONALES_INICIALES = {
+      medicina_general: ["Dra. Ana Paredes", "Dr. Luis Salazar"],
+      medicina_familiar: ["Dr. Pablo Ibarra"],
+      obstetricia: ["Obst. Lucía García"],
+      odontologia: ["Od. Karen Ruiz", "Od. Mario Vera"],
+      psicologia: ["Lic. Carla Ávila"],
+      vacunacion: ["Enf. Rosa Molina", "Enf. Pablo Ríos"],
+      sala_procedimientos: ["Aux. Carlos Jaramillo"],
+      signos_vitales: ["Aux. Nancy Torres"],
+      estadistica: ["Unidad de Estadística"],
+    };
+
+    // Usuarios demo
+    const USUARIOS = [
+      { usuario: "estadistica", clave: "1234", rol: "Estadistica", nombre: "Unidad de Estadística" },
+      { usuario: "signos", clave: "1234", rol: "SignosVitales", nombre: "Puesto de Signos" },
+      { usuario: "ana", clave: "1234", rol: "Profesional", nombre: "Dra. Ana Paredes", servicio: "medicina_general" },
+      { usuario: "pablo", clave: "1234", rol: "Profesional", nombre: "Dr. Pablo Ibarra", servicio: "medicina_familiar" },
+      { usuario: "lucia", clave: "1234", rol: "Profesional", nombre: "Obst. Lucía García", servicio: "obstetricia" },
+    ];
+
+    // -------- Utilidades --------
+    function startOfWeek(date, weekStartsOn = 1) {
+      const d = new Date(date);
+      const day = d.getDay() || 7;
+      if (day !== weekStartsOn) d.setDate(d.getDate() - (day - weekStartsOn));
+      d.setHours(0,0,0,0);
+      return d;
+    }
+    function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate()+days); return d; }
+    function formatISODate(d) { const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const da=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${da}`; }
+    function toTimeStringHHMM(date) { const hh=String(date.getHours()).padStart(2,"0"); const mm=String(date.getMinutes()).padStart(2,"0"); return `${hh}:${mm}`; }
+    function parseHHMMToDate(hhmm) { const [hh,mm]=hhmm.split(":").map(Number); const d=new Date(); d.setHours(hh,mm,0,0); return d; }
+    function overlap(aStart,aEnd,bStart,bEnd){ return aStart<bEnd && bStart<aEnd; }
+    function uid(){ return Math.random().toString(36).slice(2,9); }
+
+    // -------- Storage --------
+    const STORAGE = {
+      CITAS: "csus_html_fix_citas",
+      SERVICIOS: "csus_html_fix_servicios",
+      PROFESIONALES: "csus_html_fix_profesionales",
+      DISPONIBILIDAD: "csus_html_fix_disponibilidad",
+    };
+    function usePersistedState(key, initial){
+      const [state,setState]=React.useState(()=>{
+        try{ const raw=localStorage.getItem(key); return raw?JSON.parse(raw):initial; }catch{ return initial; }
+      });
+      React.useEffect(()=>{ localStorage.setItem(key, JSON.stringify(state)); },[key,state]);
+      return [state,setState];
+    }
+
+    // -------- App --------
+    function AgendaCSUS(){
+      const [citas,setCitas]=usePersistedState(STORAGE.CITAS,[]);
+      const [servicios,setServicios]=usePersistedState(STORAGE.SERVICIOS,SERVICIOS_INICIALES);
+      const [profesionales,setProfesionales]=usePersistedState(STORAGE.PROFESIONALES,PROFESIONALES_INICIALES);
+      const [disp,setDisp]=usePersistedState(STORAGE.DISPONIBILIDAD,{});
+
+      const [usuario,setUsuario]=useState(null);
+      const [cred,setCred]=useState({usuario:"",clave:""});
+
+      const [semBase] = useState(()=> startOfWeek(new Date()));
+      const [semana,setSemana]=useState(semBase);
+      const dias=useMemo(()=> Array.from({length:5},(_,i)=> addDays(semana,i)),[semana]);
+      const bloques=useMemo(()=>{
+        const arr=[];
+        for(let h=HORA_INICIO; h<HORA_FIN; ){
+          const s=new Date(); s.setHours(Math.floor(h),Math.round((h-Math.floor(h))*60),0,0);
+          const e=new Date(s); e.setMinutes(e.getMinutes()+DURACION_MIN);
+          arr.push({ini:toTimeStringHHMM(s),fin:toTimeStringHHMM(e)});
+          h+=DURACION_MIN/60;
+        }
+        return arr;
+      },[]);
+
+      // Login
+      function login(e){ e.preventDefault(); const u=USUARIOS.find(x=> x.usuario===cred.usuario && x.clave===cred.clave); if(!u) return alert("Credenciales inválidas"); setUsuario(u); }
+      function logout(){ setUsuario(null); }
+
+      // Disponibilidad por fecha
+      function getDisp(fechaISO){
+        const d=disp[fechaISO]||{serviciosActivos:[],profesionalesActivos:{}};
+        return {
+          serviciosActivos:new Set(d.serviciosActivos),
+          profesionalesActivos:Object.fromEntries(Object.entries(d.profesionalesActivos||{}).map(([k,v])=>[k,new Set(v)]))
+        };
+      }
+      function setDispFecha(fechaISO,next){
+        setDisp(prev=> ({...prev,[fechaISO]:{
+          serviciosActivos:Array.from(next.serviciosActivos||[]),
+          profesionalesActivos:Object.fromEntries(Object.entries(next.profesionalesActivos||{}).map(([k,v])=>[k,Array.from(v)]))
+        }}));
+      }
+
+      // Citas
+      function crearEditarCita(datos){
+        const inicio=parseHHMMToDate(datos.horaInicio);
+        const fin=parseHHMMToDate(datos.horaFin);
+        if(fin<=inicio) return alert("Hora fin > inicio");
+        const traslape=citas.some(c=> c.id!==datos.id && c.fecha===datos.fecha && c.profesional===datos.profesional && overlap(parseHHMMToDate(c.horaInicio),parseHHMMToDate(c.horaFin),inicio,fin));
+        if(traslape) return alert("Traslape con otra cita del mismo profesional");
+        setCitas(prev=> datos.id? prev.map(c=> c.id===datos.id? datos:c): [...prev,{...datos,id:uid(),signosTomados:false,solicitaReagendar:false}]);
+      }
+      function eliminarCita(id){ setCitas(prev=> prev.filter(c=> c.id!==id)); }
+      function confirmarSignos(id){ setCitas(prev=> prev.map(c=> c.id===id? {...c,signosTomados:true}:c)); }
+      function solicitarReagendar(id){ setCitas(prev=> prev.map(c=> c.id===id? {...c,solicitaReagendar:true}:c)); }
+      function aplicarReagendamiento(id,nuevaFecha,nuevaHoraIni,nuevaHoraFin){
+        setCitas(prev=> prev.map(c=> c.id===id? {...c,fecha:nuevaFecha,horaInicio:nuevaHoraIni,horaFin:nuevaHoraFin,solicitaReagendar:false}:c));
+      }
+
+      // Altas dinámicas
+      function agregarServicio(){ const nombre=prompt("Nombre del nuevo servicio:"); if(!nombre) return; const id=nombre.toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,""); if(servicios.some(s=> s.id===id)) return alert("Ya existe"); setServicios(prev=> [...prev,{id,nombre}]); setProfesionales(prev=> ({...prev,[id]:[]})); }
+      function agregarProfesional(servId){ const nombre=prompt(`Nombre del profesional para ${labelServicio(servId)}:`); if(!nombre) return; setProfesionales(prev=> ({...prev,[servId]:[...(prev[servId]||[]),nombre]})); }
+
+      // Producción (CSV)
+      function exportarProduccionCSV(fechaISO){
+        const headers=["Fecha","Servicio","Profesional","Hora inicio","Hora fin","Paciente","Documento","Teléfono","Signos confirmados","Reagendar?","Notas"];
+        const rows=citas
+          .filter(c=> c.fecha===fechaISO)
+          .sort((a,b)=> a.horaInicio.localeCompare(b.horaInicio))
+          .map(c=> [c.fecha,labelServicio(c.servicio),c.profesional,c.horaInicio,c.horaFin,c.paciente||"",c.documento||"",c.telefono||"",c.signosTomados?"SI":"NO",c.solicitaReagendar?"SI":"NO",(c.notas||"").replaceAll("\\n"," ")]);
+        const csv=[headers,...rows].map(r=> r.map(v=>"\\"" + String(v).replaceAll('"','""') + "\\"").join(",")).join("\\n");
+        const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement("a"); a.href=url; a.download=`produccion_${fechaISO}.csv`; a.click(); URL.revokeObjectURL(url);
+      }
+
+      // Filtros
+      const [fServ,setFServ]=useState("");
+      const [fProf,setFProf]=useState("");
+      const [buscar,setBuscar]=useState("");
+      const citasVisibles=useMemo(()=> citas.filter(c=>
+        dias.some(d=> c.fecha===formatISODate(d)) &&
+        (!fServ || c.servicio===fServ) &&
+        (!fProf || c.profesional===fProf) &&
+        (!buscar || `${c.paciente||""} ${c.documento||""} ${c.telefono||""} ${c.notas||""}`.toLowerCase().includes(buscar.toLowerCase()))
+      ),[citas,dias,fServ,fProf,buscar]);
+
+      // Helpers
+      function labelServicio(id){ return servicios.find(s=> s.id===id)?.nombre || id; }
+      function puedeGestionar(){ return usuario?.rol==="Estadistica"; }
+      function puedeConfirmar(c){ return usuario?.rol==="SignosVitales" && SERVICIOS_CON_SIGNOS.has(c.servicio); }
+      function puedeSolicitar(c){ return usuario?.rol==="Profesional" && c.profesional===usuario?.nombre; }
+
+      // Login screen
+      if(!usuario){
+        return (
+          <div className="min-h-screen flex items-center justify-center">
+            <form onSubmit={login} className="p-6 bg-white rounded-2xl shadow w-full max-w-sm space-y-3">
+              <h1 className="text-xl font-bold text-center">{ESTABLECIMIENTO}</h1>
+              <p className="text-center text-sm text-slate-500">Agenda (L–V 08:00–17:00)</p>
+              <input className="w-full border rounded-xl p-2" placeholder="Usuario" value={cred.usuario} onChange={(e)=> setCred({...cred,usuario:e.target.value})}/>
+              <input className="w-full border rounded-xl p-2" type="password" placeholder="Clave" value={cred.clave} onChange={(e)=> setCred({...cred,clave:e.target.value})}/>
+              <button className="w-full px-3 py-2 rounded-xl bg-indigo-600 text-white">Ingresar</button>
+              <div className="text-xs text-slate-500"><strong>Demo:</strong> estadistica/1234 · signos/1234 · ana/1234 · pablo/1234 · lucia/1234</div>
+            </form>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen">
+          <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b">
+            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-bold">{ESTABLECIMIENTO}</h1>
+                <p className="text-xs text-slate-500">Horario: Lunes a Viernes, 08:00–17:00</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm">{usuario.rol} · {usuario.nombre || usuario.usuario}</span>
+                <button onClick={logout} className="px-2 py-1 rounded-lg border bg-white">Salir</button>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx_auto p-4 space-y-4">
+            {/* Filtros */}
+            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="flex flex-col">
+                <label className="text-xs text-slate-500 mb-1">Servicio</label>
+                <select className="px-3 py-2 rounded-xl border bg-white" value={fServ} onChange={(e)=>{ setFServ(e.target.value); setFProf(""); }}>
+                  <option value="">Todos</option>
+                  {servicios.map(s=> <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col">
+                <label className="text-xs text-slate-500 mb-1">Profesional</label>
+                <select className="px-3 py-2 rounded-xl border bg-white" value={fProf} onChange={(e)=> setFProf(e.target.value)}>
+                  <option value="">Todos</option>
+                  {(fServ ? (profesionales[fServ]||[]) : Object.values(profesionales).flat()).map(p=> <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col lg:col-span-2">
+                <label className="text-xs text-slate-500 mb-1">Buscar</label>
+                <input className="px-3 py-2 rounded-xl border bg_white" placeholder="Paciente, documento, teléfono, nota" value={buscar} onChange={(e)=> setBuscar(e.target.value)} />
+              </div>
+            </section>
+
+            {/* Navegación semanal */}
+            <SemanaNav semana={semana} setSemana={setSemana} />
+
+            {/* Panel de Estadística */}
+            {puedeGestionar() && (
+              <ControlesEstadistica
+                servicios={servicios}
+                profesionales={profesionales}
+                setServicios={setServicios}
+                setProfesionales={setProfesionales}
+                dias={dias}
+                getDisp={getDisp}
+                setDispFecha={setDispFecha}
+                onAgregarServicio={agregarServicio}
+                onAgregarProfesional={agregarProfesional}
+                exportarProduccionCSV={exportarProduccionCSV}
+                citas={citas}
+                crearEditarCita={crearEditarCita}
+                eliminarCita={eliminarCita}
+                aplicarReagendamiento={aplicarReagendamiento}
+                labelServicio={labelServicio}
+              />
+            )}
+
+            {/* Semana */}
+            <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+              {dias.map((dia) => (
+                <DiaColumna
+                  key={dia.toISOString()}
+                  dia={dia}
+                  bloques={bloques}
+                  citas={citasVisibles.filter(c=> c.fecha===formatISODate(dia))}
+                  puedeGestionar={puedeGestionar}
+                  crearEditarCita={crearEditarCita}
+                  eliminarCita={eliminarCita}
+                  confirmarSignos={confirmarSignos}
+                  puedeConfirmarFn={puedeConfirmar}
+                  puedeSolicitar={puedeSolicitar}
+                  solicitarReagendar={solicitarReagendar}
+                  servicios={servicios}
+                  profesionales={profesionales}
+                  getDisp={getDisp}
+                  labelServicio={labelServicio}
+                />
+              ))}
+            </section>
+          </main>
+
+          <footer className="max-w-7xl mx-auto p-4 text-center text-xs text-slate-500">Agenda demo sin backend · Datos en tu navegador.</footer>
+        </div>
+      );
+    }
+
+    function SemanaNav({ semana, setSemana }){
+      const dias = [0,1,2,3,4].map(i=> addDays(semana,i));
+      return (
+        <section className="flex items_center justify_between">
+          <div className="flex items-center gap-2">
+            <button className="px-2 py-1 rounded-lg border bg-white" onClick={()=> setSemana(addDays(semana, -7))}>← Semana anterior</button>
+            <button className="px-2 py-1 rounded-lg border bg-white" onClick={()=> setSemana(startOfWeek(new Date()))}>Hoy</button>
+            <button className="px-2 py-1 rounded-lg border bg-white" onClick={()=> setSemana(addDays(semana, 7))}>Semana siguiente →</button>
+          </div>
+          <div className="text-sm text-slate-600">{dias[0].toLocaleDateString()} – {dias[dias.length-1].toLocaleDateString()}</div>
+        </section>
+      );
+    }
+
+    function DiaColumna({ dia, bloques, citas, puedeGestionar, crearEditarCita, eliminarCita, confirmarSignos, puedeConfirmarFn, puedeSolicitar, solicitarReagendar, servicios, profesionales, getDisp, labelServicio }){
+      const fechaISO = formatISODate(dia);
+      const { serviciosActivos, profesionalesActivos } = getDisp(fechaISO);
+
+      return (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+          <div className="px-3 py-2 bg-slate-100 border-b">
+            <div className="text-sm font-semibold">{dia.toLocaleDateString(undefined,{weekday:"long", day:"2-digit", month:"2-digit"})}</div>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {bloques.map((b)=> (
+              <Bloque
+                key={b.ini}
+                fechaISO={fechaISO}
+                bloque={b}
+                citas={citas.filter(c=> c.horaInicio===b.ini)}
+                puedeGestionar={puedeGestionar}
+                crearEditarCita={crearEditarCita}
+                eliminarCita={eliminarCita}
+                confirmarSignos={confirmarSignos}
+                puedeConfirmarFn={puedeConfirmarFn}
+                puedeSolicitar={puedeSolicitar}
+                solicitarReagendar={solicitarReagendar}
+                servicios={servicios}
+                profesionales={profesionales}
+                serviciosActivos={serviciosActivos}
+                profesionalesActivos={profesionalesActivos}
+                labelServicio={labelServicio}
+              />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function Bloque({ fechaISO, bloque, citas, puedeGestionar, crearEditarCita, eliminarCita, confirmarSignos, puedeConfirmarFn, puedeSolicitar, solicitarReagendar, servicios, profesionales, serviciosActivos, profesionalesActivos, labelServicio }){
+      const vacio = citas.length===0;
+      return (
+        <div className="p-2">
+          <div className="flex items-start gap-2">
+            <div className="text-xs w-14 shrink-0 text-slate-500">{bloque.ini}</div>
+            <div className="flex-1 space-y-2">
+              {vacio ? (
+                puedeGestionar() ? (
+                  <button className="w-full py-3 text-xs border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:text-slate-600 hover:border-slate-300" onClick={()=> crearEditarCita({ id:null, fecha:fechaISO, horaInicio:bloque.ini, horaFin:bloque.fin, servicio:servicios[0]?.id||"", profesional:(profesionales[servicios[0]?.id]||[])[0]||"", paciente:"", documento:"", telefono:"", notas:"" })}>Libre – Crear cita</button>
+                ) : (
+                  <div className="py-3 text-xs text-slate-400">Libre</div>
+                )
+              ) : (
+                citas.map((c)=> (
+                  <div key={c.id} className={`${SERVICIOS_CON_SIGNOS.has(c.servicio) && c.signosTomados ? "bg-green-50 border-green-200" : "bg-indigo-50 border-indigo-200"} px-3 py-2 rounded-xl border cursor-default`}>
+                    <div className="text-xs font-semibold flex items-center justify-between">
+                      <span>{c.horaInicio}–{c.horaFin} · {labelServicio(c.servicio)}</span>
+                      {puedeGestionar() && (
+                        <div className="flex gap-1">
+                          <button className="text-[11px] px-2 py-1 rounded bg-white border" onClick={()=> crearEditarCita(c)}>Editar</button>
+                          <button className="text-[11px] px-2 py-1 rounded bg-white border" onClick={()=> eliminarCita(c.id)}>Eliminar</button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-xs flex flex-wrap gap-x-3 gap-y-1">
+                      <span className="font-medium">{c.paciente||"(sin nombre)"}</span>
+                      <span className="text-slate-500">{c.profesional}</span>
+                      {c.documento && <span>DOC: {c.documento}</span>}
+                      {c.telefono && <span>TEL: {c.telefono}</span>}
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 flex-wrap">
+                      {puedeConfirmarFn(c) && (
+                        <button disabled={c.signosTomados} onClick={()=> confirmarSignos(c.id)} className={`text-[11px] px-2 py-1 rounded ${c.signosTomados?"bg-gray-200":"bg-emerald-600 text-white"}`}>{c.signosTomados?"Signos confirmados":"Confirmar signos"}</button>
+                      )}
+                      {puedeSolicitar(c) && (
+                        <button disabled={c.solicitaReagendar} onClick={()=> solicitarReagendar(c.id)} className={`text-[11px] px-2 py-1 rounded ${c.solicitaReagendar?"bg-gray-200":"bg-amber-600 text-white"}`}>{c.solicitaReagendar?"Solicitud enviada":"Solicitar reagendar"}</button>
+                      )}
+                      {c.notas && <span className="text-[11px] px-2 py-0.5 bg-white border rounded">{c.notas}</span>}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function ControlesEstadistica({ servicios, profesionales, setServicios, setProfesionales, dias, getDisp, setDispFecha, onAgregarServicio, onAgregarProfesional, exportarProduccionCSV, citas, crearEditarCita, eliminarCita, aplicarReagendamiento, labelServicio }){
+      const [diaExport,setDiaExport]=useState(formatISODate(dias[0]));
+      const [formCita,setFormCita]=useState(null);
+      const [reag,setReag]=useState({fecha:formatISODate(dias[0]),horaInicio:"08:00"});
+
+      const calcFin=(hini)=>{ const d=parseHHMMToDate(hini); const f=new Date(d); f.setMinutes(f.getMinutes()+DURACION_MIN); return toTimeStringHHMM(f); };
+      const abrirNueva=()=> setFormCita({ id:null, fecha:formatISODate(dias[0]), horaInicio:"08:00", horaFin:"08:30", servicio:servicios[0]?.id||"", profesional:(profesionales[servicios[0]?.id]||[])[0]||"", paciente:"", documento:"", telefono:"", notas:"" });
+      const guardar=()=>{ if(!formCita) return; crearEditarCita({ ...formCita, horaFin: calcFin(formCita.horaInicio) }); setFormCita(null); };
+
+      return (
+        <section className="p-3 border rounded-2xl bg-white shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold">Panel de Estadística</h2>
+            <div className="flex gap-2">
+              <button className="px-3 py-2 rounded bg-green-600 text-white" onClick={onAgregarServicio}>+ Servicio</button>
+              <button className="px-3 py-2 rounded bg-indigo-600 text-white" onClick={abrirNueva}>+ Cita</button>
+            </div>
+          </div>
+
+          {/* Disponibilidad diaria */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
+            {dias.map(d=> <DisponibilidadDia key={d.toISOString()} fecha={d} servicios={servicios} profesionales={profesionales} getDisp={getDisp} setDispFecha={setDispFecha} onAgregarProfesional={onAgregarProfesional} labelServicio={labelServicio} />)}
+          </div>
+
+          {/* Producción diaria */}
+          <div className="flex items-end gap-2">
+            <div className="flex flex-col">
+              <label className="text-xs text-slate-500 mb-1">Descargar producción del día</label>
+              <input type="date" value={diaExport} onChange={(e)=> setDiaExport(e.target.value)} className="px-3 py-2 rounded-xl border bg-white"/>
+            </div>
+            <button className="px-3 py-2 rounded bg-slate-800 text-white" onClick={()=> exportarProduccionCSV(diaExport)}>Descargar CSV</button>
+          </div>
+
+          {/* Reagendamiento */}
+          <div className="border-t pt-3">
+            <h3 className="font-medium mb-1">Solicitudes de reagendamiento</h3>
+            <ul className="space-y-2">
+              {citas.filter(c=> c.solicitaReagendar).map(c=> (
+                <li key={c.id} className="p-2 border rounded flex items-center justify-between">
+                  <div className="text-sm"><strong>{c.paciente}</strong> · {labelServicio(c.servicio)} · {c.profesional} · {c.fecha} {c.horaInicio}-{c.horaFin}</div>
+                  <div className="flex items-center gap-2">
+                    <input type="date" value={reag.fecha} onChange={(e)=> setReag({...reag,fecha:e.target.value})} className="px-2 py-1 border rounded"/>
+                    <input type="time" value={reag.horaInicio} onChange={(e)=> setReag({...reag,horaInicio:e.target.value})} step={60*DURACION_MIN} className="px-2 py-1 border rounded"/>
+                    <button className="px-2 py-1 border rounded bg-white" onClick={()=> aplicarReagendamiento(c.id, reag.fecha, reag.horaInicio, calcFin(reag.horaInicio))}>Aplicar</button>
+                  </div>
+                </li>
+              ))}
+              {citas.filter(c=> c.solicitaReagendar).length===0 && <li className="text-sm text-slate-500">No hay solicitudes.</li>}
+            </ul>
+          </div>
+
+          {/* Editor rápido de cita */}
+          {formCita && (
+            <div className="p-3 border rounded-xl bg-slate-50 space-y-2">
+              <h3 className="font-medium">{formCita.id?"Editar":"Nueva"} cita</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                <input type="date" value={formCita.fecha} onChange={(e)=> setFormCita({...formCita,fecha:e.target.value})} className="px-2 py-1 border rounded"/>
+                <input type="time" value={formCita.horaInicio} onChange={(e)=> setFormCita({...formCita,horaInicio:e.target.value})} step={60*DURACION_MIN} className="px-2 py-1 border rounded"/>
+                <select value={formCita.servicio} onChange={(e)=> setFormCita({...formCita,servicio:e.target.value,profesional:(profesionales[e.target.value]||[])[0]||""})} className="px-2 py-1 border rounded">{servicios.map(s=> <option key={s.id} value={s.id}>{s.nombre}</option>)}</select>
+                <select value={formCita.profesional} onChange={(e)=> setFormCita({...formCita,profesional:e.target.value})} className="px-2 py-1 border rounded">{(profesionales[formCita.servicio]||[]).map(p=> <option key={p} value={p}>{p}</option>)}</select>
+                <input placeholder="Paciente" value={formCita.paciente} onChange={(e)=> setFormCita({...formCita,paciente:e.target.value})} className="px-2 py-1 border rounded"/>
+                <input placeholder="Documento" value={formCita.documento||""} onChange={(e)=> setFormCita({...formCita,documento:e.target.value})} className="px-2 py-1 border rounded"/>
+                <input placeholder="Teléfono" value={formCita.telefono||""} onChange={(e)=> setFormCita({...formCita,telefono:e.target.value})} className="px-2 py-1 border rounded"/>
+                <input placeholder="Notas" value={formCita.notas||""} onChange={(e)=> setFormCita({...formCita,notas:e.target.value})} className="px-2 py-1 border rounded md:col-span-2"/>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button className="px-3 py-1 border rounded bg-white" onClick={()=> setFormCita(null)}>Cancelar</button>
+                <button className="px-3 py-1 rounded bg-indigo-600 text-white" onClick={guardar}>Guardar</button>
+              </div>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    function DisponibilidadDia({ fecha, servicios, profesionales, getDisp, setDispFecha, onAgregarProfesional, labelServicio }){
+      const fechaISO=formatISODate(fecha);
+      const { serviciosActivos, profesionalesActivos } = getDisp(fechaISO);
+      function toggleServicio(id){ const next={serviciosActivos:new Set(serviciosActivos),profesionalesActivos:{...profesionalesActivos}}; if(next.serviciosActivos.has(id)) next.serviciosActivos.delete(id); else next.serviciosActivos.add(id); setDispFecha(fechaISO,next); }
+      function toggleProfesional(servId,nombre){ const next={serviciosActivos:new Set(serviciosActivos),profesionalesActivos:{...profesionalesActivos}}; const set=new Set(next.profesionalesActivos[servId]||[]); if(set.has(nombre)) set.delete(nombre); else set.add(nombre); next.profesionalesActivos[servId]=set; setDispFecha(fechaISO,next); }
+      return (
+        <div className="p-3 border rounded-xl bg-slate-50 space-y-2">
+          <div className="text-sm font-semibold">{fecha.toLocaleDateString(undefined,{weekday:"long", day:"2-digit", month:"2-digit"})}</div>
+          <div className="space-y-2 max-h-72 overflow-auto pr-1">
+            {servicios.map(s=> (
+              <div key={s.id} className="border rounded-lg bg-white">
+                <div className="flex items-center justify-between px-2 py-1 border-b">
+                  <div className="text-sm">{s.nombre}</div>
+                  <label className="text-xs flex items-center gap-1"><input type="checkbox" checked={serviciosActivos.has(s.id)} onChange={()=> toggleServicio(s.id)}/> Activo</label>
+                </div>
+                <div className="p-2 space-y-1">
+                  <div className="text-[11px] text-slate-500 mb-1">Profesionales activos</div>
+                  <div className="flex flex-wrap gap-2">
+                    {(profesionales[s.id]||[]).map(p=> (
+                      <label key={p} className="text-xs flex items-center gap-1 border rounded px-2 py-1">
+                        <input type="checkbox" checked={new Set(profesionalesActivos[s.id]||[]).has(p)} onChange={()=> toggleProfesional(s.id,p)} /> {p}
+                      </label>
+                    ))}
+                    <button className="text-[11px] px-2 py-1 rounded border bg-white" onClick={()=> onAgregarProfesional(s.id)}>+ Profesional</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("app")).render(<AgendaCSUS />);
+  </script>
+</body>
+</html>
